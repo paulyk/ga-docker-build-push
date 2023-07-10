@@ -1,0 +1,99 @@
+namespace SKD.Test;
+
+public class DCWSResponseService_Test : TestBase {
+    public DCWSResponseService_Test() {
+        context = GetAppDbContext();
+        Gen_Baseline_Test_Seed_Data();
+    }
+
+    [Fact]
+    public async Task Can_create_dcws_response() {
+        // setup
+        var vehicle = context.Kits.First();
+        var vehicleComponent = vehicle.KitComponents.First();
+        var componentScan = Gen_ComponentScan(vehicleComponent.Id);
+
+        // act
+        var service = new DCWSResponseService(context);
+        var input = new DcwsComponentResponseInput {
+            KitComponentId = vehicleComponent.Id,
+            ResponseCode = "NONE",
+            ErrorMessage = ""
+        };
+        var result = await service.SaveDcwsComponentResponse(input);
+        // assert
+        Assert.Empty(result.Errors);
+        var responses = context.DCWSResponses.ToList();
+        Assert.Single(responses); //"should have 1 DCWSResponse entry"
+
+        var response = context.DCWSResponses
+            .Include(t => t.ComponentSerial).ThenInclude(t => t.KitComponent)
+            .FirstOrDefault(t => t.Id == result.Payload.Id);
+
+        Assert.True(response.ComponentSerial.VerifiedAt != null, "component scan AcceptedAt should be set");
+        Assert.True(response.ComponentSerial.KitComponent.VerifiedAt != null, "vehicle component ScanVerifiedAt should be set");
+    }
+
+    [Fact]
+    public async Task Previous_dcws_response_codes_marked_removed_when_new_one_submitted() {
+        // setup
+        var vehicle = context.Kits.First();
+        var vehicleComponent = vehicle.KitComponents.First();
+        var componentSerial = Gen_ComponentScan(vehicleComponent.Id);
+
+        var service = new DCWSResponseService(context);
+        var input = new DcwsComponentResponseInput {
+            KitComponentId = vehicleComponent.Id,
+            ResponseCode = "INVALIDSCAN",
+            ErrorMessage = ""
+        };
+
+        var input_2 = new DcwsComponentResponseInput {
+            KitComponentId = vehicleComponent.Id,
+            ResponseCode = "NONE",
+            ErrorMessage = ""
+        };
+
+        // act
+        await service.SaveDcwsComponentResponse(input);
+        await service.SaveDcwsComponentResponse(input_2);
+
+        var csr = await context.ComponentSerials.Include(t => t.DcwsResponses)
+            .FirstOrDefaultAsync(t => t.Id == componentSerial.Id);
+
+        var dcws_resposne_count = csr.DcwsResponses.Count;
+        Assert.Equal(2, dcws_resposne_count);
+
+        var by_date = csr.DcwsResponses.OrderByDescending(t => t.CreatedAt).ToList();
+
+        var latestOne = by_date[0];
+        var firstOne = by_date[1];
+        // latest one not removed
+        Assert.Null(latestOne.RemovedAt);
+        Assert.NotNull(firstOne.RemovedAt);
+    }
+
+    [Fact]
+    public async Task Ignores_dcws_response_if_matches_latest_entry() {
+        var vehicle = context.Kits.First();
+        var vehicleComponent = vehicle.KitComponents.First();
+        var componentSerial = Gen_ComponentScan(vehicleComponent.Id);
+
+        var service = new DCWSResponseService(context);
+        var input = new DcwsComponentResponseInput {
+            KitComponentId = vehicleComponent.Id,
+            ResponseCode = "INVALIDSCAN",
+            ErrorMessage = ""
+        };
+
+        // act
+        await service.SaveDcwsComponentResponse(input);
+        await service.SaveDcwsComponentResponse(input);
+
+        var csr = await context.ComponentSerials.Include(t => t.DcwsResponses)
+          .FirstOrDefaultAsync(t => t.Id == componentSerial.Id);
+
+        var dcws_resposne_count = csr.DcwsResponses.Count;
+        Assert.Equal(1, dcws_resposne_count);
+    }
+}
